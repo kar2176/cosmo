@@ -1,0 +1,453 @@
+---
+title: "**S&DS 230: Final Report**"
+author: "(names omitted)"
+date: "4/26/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+```
+
+## Introduction
+
+This final project is inspired by the recent stock crash and impending recession. We will work with three connected datasets. The first is a data set from the Chicago Board of Exchange that includes daily closing prices for several stock indexes going back to 1986 (8,337 observations and 14 variables). We'll primarily work with the S&P 500 Index, denoted by its ticker symbol `SPX`. The second dataset is quarterly GDP growth data for OECD nations going back a decade (originally 8 variables and 28,926 observations). The third is the World Bank dataset that we have've been using this semester (with 217 observations and 29 variables). There are a number of big questions that we can tackle with these data sets: What is the empirical distribution of one-day changes in the S&P 500? Can we predict changes in the stock market on the basis of changes in U.S. GDP? And, how do other correlative factors in the 2016 World Bank data affect longer-term economic growth? Before we proceed, let's clean the data. 
+
+## Data variables & cleaning
+
+```{r, include = F}
+# We will need to read in .xls files. There's a handy package to do that! 
+library(readxl)
+
+# Read in the daily raw stock data
+daily <- read_excel('CBOE_daily.xls', col_types = c('date', rep('guess', 14)))
+
+# Let's remove the messy text headers & change column names 
+daily <- daily[-c(1:2),]
+names(daily) <- daily[2,]
+
+# Save a key so that we can cross-ref the index tickers with the long names
+key <- daily[1:2,2:15]
+
+# Remove text entries from the daily tbl and replace with NA
+daily <- daily[-c(1:2),]
+names(daily)[1] <- 'DATE'
+daily[3,c(3,7,8)] <- NA
+
+# Convert stock closing price series to numeric-type vectors
+for (i in 2:15) {
+  daily[[i]] <- as.numeric(daily[[i]])
+}
+
+# Import the same data, except on a monthly basis. Perform the same cleaning steps. 
+
+monthly <- read_excel('CBOE_monthly.xls', col_types = c('date', rep('guess', 14)))
+monthly <- monthly[-c(1:2),]
+names(monthly) <- monthly[2,]
+monthly <- monthly[-c(1:2),]
+names(monthly)[1] <- 'DATE'
+monthly[3,c(3,7,8)] <- NA
+for (i in 2:15) {
+  monthly[[i]] <- as.numeric(monthly[[i]])
+}
+
+# For comparison with quarterly GDP data, retain only the quarterly closing prices
+quarterly <- monthly[seq(1, nrow(monthly), 3),]
+
+library(lubridate)
+quarterly$QUARTER <- month(quarterly$DATE)/3
+quarterly$YEAR <- year(quarterly$DATE)
+quarterly$PCT_DIFFS <- c(NA, diff(quarterly$SPX)/quarterly$SPX[1:(length(quarterly$SPX)-1)])
+
+# Read in OECD quarterly GDP percent change data
+oecd <- read.csv('OECD_qgdp.csv', header = TRUE)
+
+# Keep only the columns that matter: Country, date, change. 
+# Keep only percentage change versus previous quarter
+qgdp <- oecd[oecd$MEASURE == 'PC_CHGPP',c(1,6,7)]
+table(qgdp$LOCATION)
+
+# Read in the World Bank data, and merge with the quarterly GDP dataset to from `econ`
+wb <- read.csv('http://reuningscherer.net/S&DS230/data/WB.2016.csv', header=TRUE)
+econ <- merge(qgdp, wb, by.x = "LOCATION", by.y = "Code")
+colnames(econ)[1:3] <- c('Code', 'Quarter', 'PctGDP_Change')
+
+# Split the `Quarter` column into two columns: 
+library(dplyr) 
+library(tidyr) 
+econ <- econ %>% separate(Quarter, c("Year","Quarter"))
+econ$Quarter <- gsub('Q','',econ$Quarter)
+econ$Quarter <- as.numeric(econ$Quarter)
+econ$Year <- as.numeric(econ$Year)
+```
+
+We read in the raw XLS data files to data frames: First, we have to remove messy text headers and reformat the data frame so that it is readable. We change the column names to be more succinct, but save a key so that we can cross-reference the shorter names with the original long descriptors (e.g. Stocks both have ticker symbols and extended names). We remove all text entries from the dataframe of daily stock closing prices, and replace them with `NA`. Many of the columns are character vectors; we convert them to numeric-type. In addition to daily closing prices, we read in a file with monthly closing prices and perform the same cleaning steps. From this data, we save only the closing prices from the end of each quarter. (We are interested in the quarterly closing stock prices for comparison with quarterly GDP data.) For all the stock data, we convert the closing price data into percent change on the previous period. The stock data has numerous stock indexes: The one that we will primarily work with is the S&P 500 Index, which is denoted by the ticker symbol `SPX`. Now, we read in the OECD data with the quarter-on-quarter GDP percent changes. From this data we keep only the country, date, and percentage change value. We will use all of these variables: The country, the date of the value, and the percentage change in the country's gross domestic product from the previous quarter. (The gross domestic product measures the size of the economy.) We read in the World Bank dataset and merge it with the OECD data based on country codes. (Note that there are only 47 OECD countries left in the combined dataset.) Across all dataframes, we standardize the dates into two columns: Year and quarter. In the world bank data, we'll primarily be using just the economic factors: The `GNI` variable, which measures the a country's gross national income per capita in 2016, a country's total exports in 2016, and a country's total imports in 2016. The `GNI` is a proxy for a country's economic output, and tracks closely with `GDP` in most OECD nations. The export-income data allows us to measure a country's trade activity. We'll revisit these economic variables in the second part of ths report. First, we'll look at the stock data. 
+
+## Plots & statistics 
+
+### The distribution of S&P 500 daily price changes
+
+In order to get a sense of the shape of the stock data, let's take a look at the distribution of one-day changes in the S&P 500 Index. This is an extremely important distribution for investors: It roughly gives the relative probability distribution for a one-day change in the overall market. This distribution is used to price many complex index derivatives. We can get summary statistics for this distribution: 
+
+```{r, echo = F}
+summary(diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)])
+```
+
+These statistics illustrate that on average, the S&P 500 does not meaningfully change, with a marginal skew to the left. i.e. It is slightly more likely to increase than decrase. Over time this compounds into significant gains. The one-day move distribution is tight around zero. We can plot a histogram of daily percentage changes in `SPX`:
+
+```{r, echo = F}
+hist(100*diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)], breaks = 250, main = 'Histogram of S&P 500 one-day moves', xlab = 'Percent change in price', xlim = c(-7.5,7.5))
+```
+
+Stock prices are modeled as stochastic processes, which change according to a time-evolving distribution. These prices might look normal, but, as we have seen this past semester, looks can be deceiving. Let's plot the data on a normal quantile plot to investigate: 
+
+```{r, echo = F}
+library(car)
+qqPlot(100*diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)], ylab = 'Percent changes in S&P 500', main = 'Normal quantile plot of S&P 500 one-day moves')
+```
+
+The data are clearly not normal. (For normal quantiles beyond one standard deviation, there is significant deviation from what we would expect.) There is significnat skewness in the data's emprical distribution: The tails of the above histogram are much heavier than we would expect from a normal distribution. This corresponds to investors' tendency to underestimate the likelihood of extreme events. We note that the extreme outliers correspond to well-known events: The lower outlier is the "Black Monday" crash of 1987, while the upper outlier is a day during the chaos of 2008. Our skew is symmetric, so the median and mean ought to be correctly described by the normal distribution. We can measure the skew of our data by stock index and time period:
+
+```{r, echo = F}
+library(DescTools)
+skews <- data.frame(rbind(apply(daily[2:15], 2, Skew, na.rm = T), apply(monthly[2:15], 2, Skew, na.rm = T), apply(quarterly[2:15], 2, Skew, na.rm = T)))
+rownames(skews) <- c('Daily','Monthly', 'Quarterly')
+format(skews, digits = 2)
+```
+
+The skew of a normal distribution is zero: Nonzero skew corresponds to deviation from a standard normal curve. We notice that, as we look at the data over longer periods of time, the skew decreases. In other words, stock index prices are closer to a normal distribution in the long run. We also notice some indexes such `VIX`, which measures the volatility of the S&P 500 Index, experience much greater skew than other indexes. (Volatility is the the empirical standard deviation $\sigma$ of the price data over time.) On the other hand, the `SPTR` index, which tracks the total returns accrued to reinvestors in the S&P 500, has approximately constant skew. Now, it is generally assumed that stocks are log-normally distributed in the long run. This is incorrect in most cases: The log-normal distribution does not fit, as has been acknowledged by many other authors. (See Daniel L. Richey, ``The Distribution of Individual Stock Returns in a Modified Black-scholes Option Pricing Model ," *Electronic Theses and Dissertations*, Summer 2012.) A Student $t$-distribution has been proposed as a potential fit. How does these models check out? We can plot the empirical CDF for the data: 
+
+```{r, echo = F}
+# Plot the empirical distriution of the data 
+ecdf(diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)])
+plot(ecdf(diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)]), main = 'Empirical distribution of 1-day S&P 500 moves')
+```
+
+This looks temptingly normal. Assuming the data *is* log-normally distributed (even though we know from other sources that it is not), we can plot the data on a log-normal-quantile plot:  
+
+```{r, echo = F}
+# Define a new `var` which is the log of 1 plus the day-on-day SPX returns
+var <- log(1+diff(daily$SPTR)/daily$SPTR[1:(length(daily$SPTR)-1)])
+var <- var[!is.na(var)]
+
+# Clearly a log-normal distribution is not good enough 
+qqPlot(var, dist = 'norm', main = 'logNormal quantile plot of 1-day S&P 500 moves', ylab = 'log(1+Pct. move)')
+```
+
+This doesn't work well at all, as many have noticed. The tails are too heavy. At least these tails are closer to normal than the unlogged version. How about a Student $t$-distribution?
+
+```{r, echo = F}
+# But a t-distribution doesn't work that much better! 
+var2 <- diff(daily$SPTR)/daily$SPTR[1:(length(daily$SPTR)-1)]
+var2 <- var2[!is.na(var2)]
+qqPlot(100*var2, dist = 't', df = length(var2)-1, main = 't-quantile plot of 1-day S&P 500 moves', ylab = 'Percent move')
+```
+
+The $t$-quantile plot with $n-1$ degrees of freedom doesn't work that much better, though the tails are much closer to what we want! (See $y$-axis.) Let's try and fit a distribution nonparametrically, using maximum likelihood estimation. First, we can visualize our data on a kurtosis-skewness graph to identify potential distributional fits. This is known as a Cullen-Frey graph. 
+
+```{r, echo = F}
+# How can we do better? 
+library(fitdistrplus)
+descdist(var[!is.na(var)], boot = 1000)
+```
+
+As we've seen, none of the usual distributions fits our data. We can now run the MLE goodness-of-fit test for several generalized Pearson distributions, to determine what paramaters are best for our data. 
+
+```{r, echo = F}
+# Whoa our data is out there on the Cullen-Frey plot 
+library(PearsonDS)
+pearsonFitML(var)
+```
+
+The Pearson goodness-of-fit test indicates that a Pearson distribution of type IV is best. This also known as a Cauchy or Lorentzian distribution! The Cauchy distribution is a stable symmetric distribution with heavy tails, as we would hope. We can plot the data on a Cauchy-quantile plot, along with the empirical distribution.
+
+```{r, echo = F}
+# It seems a Pearson distribution of type IV is best: 
+# That is a Cauchy distribution
+
+qqPlot(var, dist = 'cauchy', main = 'Cauchy quantile plot of 1-day S&P 500 moves', ylab = 'log(1+Percent change)')
+
+# All but 8 of our 7850 data points are within confidence for this model
+```
+
+All but 8 of our 7850 data points fall within the confidence bands for the model. This is excellent. When things go really crazy, no steady probability distribution can accurately reflect market swings. Price movements during extreme crises or bubbles can be extreme, and often irrational. That's why most sophisticated investors use more complex variable-variance distributions or multivariable approaches. For our purposes, day-on-day percentage changes in the S&P 500 are Cauchy distributed. There are a number of technical outliers in our dataset, which might be influencing the fit. Let's remove the outliers and recalculate the distribution: 
+
+```{r, echo = F}
+ub <- 1.5*IQR(diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)], na.rm = T)+quantile(diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)], 0.75, na.rm = T)
+lb <- -1.5*IQR(diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)], na.rm = T)+quantile(diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)], 0.25, na.rm = T)
+
+var3 <- diff(daily$SPXSM)/daily$SPXSM[1:(length(daily$SPXSM)-1)]
+var3 <- var3[!var3>ub & !var3 <lb]
+var3 <- var3[!is.na(var3)]
+qqPlot(var3, 'cauchy', main = 'Cauchy-q plot of 1-day S&P 500 moves (without outliers)', ylab = 'log(1+Percent change)')
+```
+
+This is a much sharper fit, but still, as before, the distribution breaks down at extreme levels. Note again that there is symmetry: The skew of the data above the mean is the same magnitude as the skew of the data below the mean.
+
+### Correlation between stock indexes 
+Having looked at the S&P 500's returns distribution, before we introduce the economic data, it might be well worth it to see how different stock indexes are correlated with one another over time. Can we use the S&P 500 as a proxy for the other indexes? We can calculate the correlation matrix, run a correlation test, and plot the results: 
+
+```{r, echo = F}
+library(corrplot)
+corr <- cor(daily[-1][complete.cases(daily[-1]),])
+cortest <- cor.mtest(daily[-1][complete.cases(daily[-1]),], conf.level = 0.95)
+
+corrplot.mixed(corr, lower.col = "black", upper = "ellipse", tl.col = "black", number.cex = .7, order = "hclust", tl.pos = "lt", tl.cex=.7, p.mat = cortest$p, sig.level = .05)
+```
+
+This is exactly what we would expect. Most of the normal stock market indexes are synchronized with one another. `VIX` and `VXO` are both "fear gauges" that measure the uncertainty in the market. Accordingly, they behave in an weakly opposite way to those indexes. `BFLY` and `CNDR` are stock indexes that are based on complex options strategies: The important thing to know about them is that their price rises when the stock market stays flat and does not change. This is reflected in the ambivalent correlations. It seems the S&P 500 is a good benchmark for us to use: Most of the esoteric stock indexes are highly correlated to it. (Many index options traders make money on the small differences in correlation between these indexes: These are known as dispersion trades.)
+
+## Analyzing stocks & the economy 
+
+### Predicting the S&P 500 by U.S. quarterly GDP changes 
+
+One of the major questions motivating this project is: How influenced is the stock market by the economy, and vice versa? Let's now introduce the economic data, just focusing on the United States for the time being. Using the quarterly GDP growth data and the quarterly change in the S&P 500, how well does economic growth predict the stock market? 
+
+```{r, echo = F}
+# Create a combined dataset with S&P 500 percentage change by quarter, and US economic percentage growth by quarter
+fin <- merge(quarterly[,c(4,16,17,18)], econ[econ$Code == 'USA',], by.x = c('QUARTER', 'YEAR'), by.y = c('Quarter', 'Year'))
+
+# Rename columns
+colnames(fin)[1:4] <- c('Quarter', 'Year', 'SPX', 'PctSPX_Change')
+
+#Make scatter plot with line
+plot(fin$PctGDP_Change, fin$PctSPX_Change, ylab = 'Quarterly pct. ch. in SPX', xlab = 'USA quarterly pct. GDP ch.', main = 'S&P 500 vs. GDP changes', col = 1:4, legend = levels(factor(fin$Quarter)))
+legend('topleft', col = 1:4, legend = paste("Q",levels(factor(fin$Quarter)),sep=""), pch = 1)
+abline(a = lm(fin$PctSPX_Change ~ fin$PctGDP_Change)$coefficients[1], b= lm(fin$PctSPX_Change ~ fin$PctGDP_Change)$coefficients[2])
+```
+
+We have color-coded the data points by the quarter they are from (first, second, third, fourth). We notice first quarter (black circles) tends to be more positive, whereas the fourth quarter (blue circles) is more negative. This corresponds to the usual business cycle, with end-of-year profit announcements coming early on in the new year (January-March). There is a positive relationship between the S&P 500 index and economic growth, but it's a very weak increase. Let's take a closer look at that regression model, predicting quarterly percent changes in the S&P 500 by quarterly GDP changes.
+
+```{r, echo = F}
+mod1 <- lm(fin$PctSPX_Change ~ fin$PctGDP_Change)
+summary(mod1)
+```
+
+We notice that there is a statistically significant positive relationship between changes in GDP and the change in the S&P 500, assuming that the residuals are normally distributed. (According to the one-sample $t$-test.) That's good: Ostensibly the S&P 500's price tracks with the health of the United States's biggest corporations. When the economy is doing well, and those corporations are doing well, then the S&P 500 should rise. (And vice versa). But are the assumptions for regression actually met? 
+
+```{r, echo = F}
+source("http://www.reuningscherer.net/s&ds230/Rfuncs/regJDRS.txt")
+myResPlots2(mod1, label = "SPX growth predicted by economy")
+```
+
+The fits vs. studentized residuals plot does not evidence any heteroskedasticity. (There are a few of outliers above and below the confidence brackets.) The residuals are not normally distributed, with a skew on the left. So, let us instead perform robust regression (maximum likelihood estimation), allowing for the errors to me more generally distributed according to a $t$-distribution, rather than a Gaussian distribution. 
+
+```{r, echo = F}
+library(MASS)
+mod2 <- rlm(PctSPX_Change ~ PctGDP_Change, data = fin)
+aov1 <- aov(PctSPX_Change ~ PctGDP_Change, data = fin)
+summary(mod2)
+
+library(QRM)
+
+#g <- function(x, nu, deriv = 0) {
+#  if (deriv == 0) {
+#    return(1/(x^2 + nu))
+#  } else {
+#    return((nu-x^2)/(x^2 + nu)^2)
+#  }
+#}
+
+mod3 <- rlm(PctSPX_Change ~ PctGDP_Change, data = fin)
+summary(mod3)
+```
+
+The predicted coefficients do not change all that much, and the slope term continues to be statistically significant! This test indicates that normal Gaussian-error regression is a good enough approximation to the actual distribution of the residuals.
+
+### Tracking economic path-dependence in the S&P 500
+There is likely a lag between the S&P 500 and real growth in the U.S. economy: The stock market takes economic news into account over time. If we just tried to predict the stock market in a given quarter based on the economic growth in the United States over the past $N$ quarters, would that be a better model? Let's try a large number of past quarters, e.g. N=35.
+
+```{r, echo = F}
+fin$Time <- fin$Year + 0.25*fin$Quarter
+N <- 35
+memory <- data.frame(fin$PctGDP_Change)
+
+for (i in 1:N) {
+  memory <- cbind(memory, c(rep(NA, i),fin$PctGDP_Change[1:(length(fin$PctGDP_Change)-i)]))
+}
+colnames(memory) <- c('GDP_0', 1:N)
+memory$SPX_0 <- fin$PctSPX_Change
+
+memory <- memory[-c(1:N),]
+
+library(leaps)
+best <- summary(regsubsets(log(SPX_0) ~., data = memory, nbest = 1, nvmax = ncol(memory)-1))
+
+summary(lm(log(memory$SPX_0) ~., data = memory[,as.logical(best$which[which.max(best$adjr2),][-1], TRUE)]))
+myResPlots2(lm(log(memory$SPX_0) ~., data = memory[,as.logical(best$which[which.max(best$adjr2),])]), label = 'SPX by 35 quarters GDP')
+```
+
+We first note that the regression hypotheses are met: The residuals are normally distributed, and the data is homoskedastic. The recommended  13-variable model performs much better in tems of adjusted R-squared (0.2366 versus 0.06941), but it is not a significant improvement over simple regression with one variable, given how many other variables we are adding: Using the Bayesian Information Criterion, this model does much worse than the simple, one-variable one. According to the BIC, we should choose a 3-variable model, modelling the stock price based on the GDP change data roughly 1, 2, and 4 years ago.
+
+```{r, echo = F}
+summary(lm(log(memory$SPX_0) ~., data = memory[,as.logical(best$which[which.min(best$bic),][-1], TRUE)]))
+myResPlots2(lm(log(memory$SPX_0) ~., data = memory[,as.logical(best$which[which.min(best$bic),])]), label = 'SPX by 3 quarters GDP')
+```
+
+All the hypotheses of our regression model are met in this case: The data is homoskedastic, and the residuals are normally distributed. The regression coefficients are all statistically significant. We see that, as the GDP growth rate increases over the specified input periods, the predicted stock price rises. This is a good mdoel, given how noise the data are. The 3-variable model is more easily interpretable: We can model the current stock price as a series expansion in past economic growth regimes. Signals from roughly $1$, $2$, and $2^2$ years ago filter through. This is consonant with the idea from modern financial theory that the the current stock price can be expanded as a stochastic power series in terms of past price data, with some predictive power. Before moving on, let's run an analysis of variance (ANOVA) test on this model: 
+
+```{r, echo = F}
+aov2 <- Anova(lm(log(memory$SPX_0) ~., data = memory[,as.logical(best$which[which.min(best$bic),][-1], TRUE)]))
+aov2
+```
+
+We notice that all of the F-values are significant at the 0.05 level, and so the influence of each of these individual predictors is significant, by itself. (The above $t$-test $p$-values referred to overall significant in the model.)
+
+### Economic growth rate distribution
+
+Enough with the stonks. Let's take a closer look at the economic growth data by itself. It's cleaner than the stock data, and there are several important questions from development economics we can address with it. First, let's visualize the United States's quarterly growth data from the past 30 years, to get a sense of what GDP growth rate data actually looks like:  
+
+```{r, echo = F}
+var4 <- econ[econ$Code == 'USA',]$PctGDP_Change
+boxplot(var4, main = 'Quarterly percent chg. in United States real GDP')
+summary(var4)
+```
+
+As expected, growth rates are fairly concentrated around the median of just under 1 percent. Ever since the industrial revolution, economies have usually been growing. From the boxplot, it is clear that the U.S. growth data has significant right skew, unlike the symmetric S&P stock data. Let's try and lessen this effect through an appropriate transformation, i.e. the logarithm, which is suitable for this skew. Here's the log data on a normal quantile plot:
+
+```{r, echo = F}
+qqPlot(log(1+var4), 'norm')
+```
+
+That looks better, though there's now left skew in the data. We can still work with this. (There is no need for the data itself to be normally distributed here; just the residuals in regression.) Other countries will behave in a similar way way; we can effect the same transformation to reduce the skew. Let's move on to the analysis. 
+
+### Predicting economic growth trends from gross national income
+
+A huge question here is: Can we predict a country's average economic growth over the past 30 years by the gross national income in 2016? It is often said that larger economies grow slower, and vice versa. How strong is that relationship? We can make a simple toy model predicting log growth by GNI per capita (`GNI`). The model gives $\log(1+\rm{Percent GDP Change}) = -3.21 \cdot \rm{GNI} + 0.8189$, where GNI is the gross natinal income per capita in millions of 2016 U.S. dollars. Both of the coefficients are highly statistically significant ($p$-value less than `2E-16`).
+
+```{r, echo = F}
+mod4 <- lm(log(1+econ$PctGDP_Change) ~ econ$GNI)
+# summary(mod4)
+
+# Let's agggregate by country 
+byCountry <- aggregate(econ[,c(4,8)], by = list(econ$Code), mean)
+plot(log(1+byCountry$PctGDP_Change) ~ byCountry$GNI, main = 'Avg. quarterly GDP growth vs. GNI per capita', ylab = 'Avg. quarterly GDP growth (1986-)', xlab = 'Per capita GNI (2016)')
+abline(a = mod4$coefficients[1], b = mod4$coefficients[2], col = 'blue')
+mod4 <- lm(log(1+byCountry$PctGDP_Change) ~ byCountry$GNI)
+myResPlots(mod4, label = "GDP growth vs. GNI")
+```
+
+There's a solid downward trend. All of the predictors are all significant, under the assumption that the residuals are normally distributed. The overall relationship is somewhat weak (a decrease of `3.210` for every million dollar increase in `GNI`.) We notice some potential outlier countries above (Ireland, Korea, China) and below (Lithuania, Latvia, Estonia) the trend. Only China appears to be influential and a technical outlier. When we look at the plot of fits versus residuals and the normal quantile plot of the residuals most of the data fall within the bands (i.e. no heteroskedasticity or evidence of non-normality), with the exception of China. After removing China the coefficients do not change all that much: We still find a similar decreasing relationship. After removing China, all of our regression hypotheses (normally distributed errors, homoskedastic data) are exactly met. 
+
+```{r, eval = F}
+byCountry <- aggregate(econ[,c(4,8)], by = list(econ$Code), mean)
+
+ub <- IQR(byCountry$PctGDP_Change) + quantile(byCountry$PctGDP_Change, 0.75)
+lb <- -IQR(byCountry$PctGDP_Change) + quantile(byCountry$PctGDP_Change, 0.25)
+
+# We just need to take out China
+byCountry <- byCountry[!byCountry$PctGDP_Change > ub & !byCountry$PctGDP_Change <lb,]
+
+mod4 <- lm(log(1+byCountry$PctGDP_Change) ~ byCountry$GNI)
+summary(mod4)
+
+plot(log(1+byCountry$PctGDP_Change) ~ byCountry$GNI)
+abline(a = mod4$coefficients[1], b = mod4$coefficients[2])
+
+myResPlots(mod4, label = "Economic: Growth vs. size")
+```
+
+### Comparing different nations' growth rates
+
+We live in a globalized world, where each nation's fortunes affect others. To start with a simple question, is there a statistically significant difference between the average growth rate of India and China (the world's two most populous countries)? We can perform a simple $t$-test to ask this question: 
+
+```{r, echo = F}
+t.test(x = econ[econ$Code == 'CHN',]$PctGDP_Change, y = econ[econ$Code == 'IND',]$PctGDP_Change)
+```
+
+As we would expect, the average quarterly GDP growth rate in China is statistically significantly different than the growth rate in India. A 95 percent confidence interval has China's mean GDP growth rate between 1 and 3.5 percent greater than India's. We can test the difference in means using a nonparametric bootstrap test:
+
+```{r, echo = F}
+set.seed(1234)
+N = 10000
+diffGrowth <- rep(NA, N)
+n_china <-  length(econ[econ$Code == "CHN", ]$PctGDP_Change)
+n_india <-  length(econ[econ$Code == 'IND',]$PctGDP_Change)
+
+for (i in 1:N) {
+  ChinaMean <- mean(sample(econ[econ$Code == "CHN", ]$PctGDP_Change,n_china, replace=T))
+  IndiaMean <- mean(sample(econ[econ$Code == 'IND',]$PctGDP_Change,n_india, replace=T))
+  diffGrowth[i] <- ChinaMean - IndiaMean
+}
+
+# summary(diffGrowth)
+(bci <- quantile(diffGrowth, c(0.005, 0.995)))
+```
+
+The results are similar to the $t$-test interval, with China's growth rate firmly exceeding India's. Now, it's quite possible that we are interested in seeing how the median, rather than average, growth between China and India has compared over the past 30 years. We can use a permutation test to assess that difference: 
+
+```{r, echo = F}
+# Create a dataframe with just India and China
+two <- econ[econ$Code == "CHN"|econ$Code == "IND",]
+
+# Calculate the actual difference between the two: 
+actualdiff <- median(two$PctGDP_Change[two$Code=='CHN'])-median(two$PctGDP_Change[two$Code=='IND'])
+N = 10000
+diffvals <- rep(NA, N)
+# Run the permutation test
+for (i in 1:N) {
+  CodePerm <- sample(two$Code)
+  diffvals[i] <- median(two$PctGDP_Change[CodePerm=='CHN'])-median(two$PctGDP_Change[CodePerm=='IND'])
+  }
+#Make histogram of permuted median differences
+hist(diffvals, col = "grey", main = "Permuted sample median diff. in GDP pct. change: India-China", xlab = "Percent/100", breaks = 50)
+abline(v = actualdiff, col = "blue", lwd = 3)
+text(actualdiff + 0.04, 1600 , paste("Actual Diff in Medians =", round(actualdiff,2)),srt = 90)
+(p <- mean(abs(diffvals) >= abs(actualdiff)))
+```
+
+We cannot reject the hypothesis that the median quarterly growth rates are the same, since the $p$-value of `0.56 > 0.05`. The permutation test provides no evidence of the median growth rates being different. It looks like the difference in means is in part a consequence of different distribution shapes. Both nations are clearly growing at significant rates. We can ask these same questions about a more stark example that comes in the news often: The United States and China. 
+
+```{r, echo = F}
+# Create a dataframe with just India and China
+two <- econ[econ$Code == "CHN"|econ$Code == "USA",]
+
+# Calculate the actual difference between the two: 
+actualdiff <- median(two$PctGDP_Change[two$Code=='CHN'])-median(two$PctGDP_Change[two$Code=='USA'])
+N = 10000
+diffvals <- rep(NA, N)
+# Run the permutation test
+for (i in 1:N) {
+  CodePerm <- sample(two$Code)
+  diffvals[i] <- median(two$PctGDP_Change[CodePerm=='CHN'])-median(two$PctGDP_Change[CodePerm=='USA'])
+  }
+#Make histogram of permuted median differences
+hist(diffvals, col = "grey", main = "Permuted sample median diff. in GDP pct. change: US-China", xlab = "Percent", breaks = 50, xlim = c(min(diffvals), actualdiff))
+abline(v = actualdiff, col = "blue", lwd = 3)
+text(actualdiff - 0.03, 600 , paste("Actual Diff in Medians =", round(actualdiff,2)),srt = 90)
+(p <- mean(abs(diffvals) >= abs(actualdiff)))
+
+N = 10000
+diffGrowth <- rep(NA, N)
+n_china <-  length(econ[econ$Code == "CHN", ]$PctGDP_Change)
+n_america <-  length(econ[econ$Code == 'USA',]$PctGDP_Change)
+
+for (i in 1:N) {
+  ChinaMean <- mean(sample(econ[econ$Code == "CHN", ]$PctGDP_Change,n_china, replace=T))
+  AmericaMean <- mean(sample(econ[econ$Code == 'USA',]$PctGDP_Change,n_america, replace=T))
+  diffGrowth[i] <- ChinaMean - AmericaMean
+}
+
+summary(diffGrowth)
+(bci <- quantile(diffGrowth, c(0.005, 0.995)))
+
+t.test(x = econ[econ$Code == 'CHN',]$PctGDP_Change, y = econ[econ$Code == 'USA',]$PctGDP_Change)
+```
+
+It is very clear the United States and China are on different growth trajectories. That's no wonder: The United States is the world's incumbent economic superpower and China is its rapidly growing challenger. The $t$-test and boostrap test for mean difference are conclusive as to the difference in growth rates between the two nations. The permutation test conclusively demonstrates that the medians are different, with a $p$-value of zero. This agrees with our earlier result that countries with larger GNI's tend to grow slower: The United States's 2016 GNI per capita of 56,800 is nearly 7 times that of China. It is no wonder that the distribution of growth rates is lower for the U.S., as compared to China. 
+
+### Importance of global economic cooperation
+To conclude this report, let's look at how closely tied economic cycles are in ten largest economies. We calculate pairwise correlations between these ten economies, in terms of their average economic growth rate, GNI in 2016, and balance of trade (exports minus imports). These numbers act to characterize a given country's economy. How similar are these massive economies?
+
+```{r, echo = F}
+byCountry <- as.data.frame(t(aggregate(econ[,c(4,8,10,11)], by = list(econ$Code), mean))[2:5,])
+colnames(byCountry) <- t(aggregate(econ[,c(4,8,10,11)], by = list(econ$Code), mean))[1,]
+
+pairsJDRS(byCountry[,as.numeric(na.omit(match(colnames(byCountry), c("USA", "CHN", "JPN", "DEU", "IND", "FRA", "GBR", "ITA", "BRA","CAN"))))])
+```
+
+The correlations are high, and many of them are significant. This is exactly what we'd expect: Higher GNI's mean more negative trade balances, and lower growth rates. (And vice versa.) These nations' economic profiles are highly correlated to one another. More broadly, if any of them do well, we'd expect the others to do well. We're all in this together, folks.
+
+## Conclusion & summary
+
+In this report, we have tackled some significant questions. After importing and cleaning the several economic and financial data sets that set out to work with, we visualized the stock and economic data using histograms, boxplots, and scatter plots. Through trying several distributions and Pearson ML estimation, we found that the S&P 500's daily price changes are Cauchy distributed. We analyzed the correlation between various stock indices (all tied to the broader stock market) and saw that most indices were tightly correlated to one another, and to the S&P 500 index `SPX`. We used past quarterly economic growth data to model the S&P 500 price changes and found that a model with 3 past quarters (a power law in time, `1`, `2`, and `2^2` years ago) seems to offer the best prediction, accounting for model complexity. As we would expect, greater levels of economic growth imply positive moves in the S&P 500 Index. Next, we looked at the distribution of economic growth rates, and whether these historical growth rates can be predicted by 2016 GNI. Our model demonstrates that there is a relationship between the size of a nation's economy and its average growth rate: Larger economies grow slower. Then, we ran some country-specific analysis: While the mean growth rate for India and China are very definitely different, their median growth rates may be the same. China appears to be consistently outperforming India in terms of economic growth. The United States and China are on different growth trajectories in every regard, with Chinese growth outpacing the United States by anywhere from 2.5 percent to 5 percent (95 percent confidence). In closing, we looked at how correlated top-10 economies' profiles (i.e. GNI, trade balance, and average growth rate) are to one another. We found that GNI, trade balance, and average growth rates are very correlated across these ten economies. (i.e. These metrics tend to behave in a consistent way to describe different economies.) That rule is likely to govern in the future: Economic growth, the size of one's economy, and one's trade relations go hand in hand. Today's governments ought to remember that.
